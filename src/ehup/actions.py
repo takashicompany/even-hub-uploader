@@ -135,6 +135,21 @@ def create_app(
     )
 
 
+def latest_version(p: Portal, package_id: str) -> str:
+    """直近にアップロードされたビルドのバージョンを返す。
+
+    アップロード直後のビルドは Private builds の先頭に並ぶ。
+    Private が無い場合のみ、画面上の先頭を使う。
+    """
+    versions = list_versions(p, package_id)
+    if not versions:
+        raise PortalError(f"{package_id} にビルドがありません。")
+    for v in versions:
+        if v["section"] == "Private builds":
+            return v["version"]
+    return versions[0]["version"]
+
+
 def _find_package_id_by_name(p: Portal, name: str) -> str | None:
     """一覧から名前でプロジェクトを探し、package_id を返す。"""
     p.goto("/hub")

@@ -176,6 +176,18 @@ def app_group() -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="アイコン（24x24 モノクロ PNG）",
 )
+@click.option(
+    "--tester",
+    "testers",
+    multiple=True,
+    help="ベータテスターに追加するメールアドレス（複数可）",
+)
+@click.option(
+    "--beta/--no-beta",
+    default=True,
+    show_default=True,
+    help="作成後にビルドをBeta化し、ログイン中のメールアドレスをテスターに追加する",
+)
 @click.option("--dry-run", is_flag=True, help="確定せずに、入力内容だけ確認する")
 @browser_options
 def app_create(
@@ -183,11 +195,17 @@ def app_create(
     tagline: str,
     name: str | None,
     icon: Path | None,
+    testers: tuple[str, ...],
+    beta: bool,
     dry_run: bool,
     headed: bool,
     as_json: bool,
 ) -> None:
-    """.ehpk から新しいプロジェクトを作成する。"""
+    """.ehpk から新しいプロジェクトを作成する。
+
+    既定では作成後にビルドをBeta化し、ログイン中のメールアドレスを
+    ベータテスターに追加する（--no-beta で止められる）。
+    """
     from . import actions
     from .browser import PortalError
 
@@ -196,6 +214,21 @@ def app_create(
             result = actions.create_app(
                 p, ehpk=ehpk, tagline=tagline, name=name, icon=icon, dry_run=dry_run
             )
+
+            if beta and not dry_run:
+                package_id = result["package_id"]
+                version = actions.latest_version(p, package_id)
+                result["beta_version"] = version
+                result["beta"] = actions.set_build_state(
+                    p, package_id, version=version, state="Beta"
+                )
+
+                emails = [credentials.load().email, *testers]
+                seen: list[str] = []
+                for e in emails:
+                    if e.lower() not in [s.lower() for s in seen]:
+                        seen.append(e)
+                result["testers"] = actions.add_testers(p, package_id, seen)
         except PortalError as exc:
             _fail(str(exc))
 
@@ -209,9 +242,17 @@ def app_create(
         click.echo(f"  名前     : {result['name']}")
         click.echo(f"  一言説明 : {result['tagline']}")
         click.echo(f"  アイコン : {result['icon'] or '(なし)'}")
+        if beta:
+            click.echo("  作成後   : Beta化 → テスター追加（ログイン中のアドレス"
+                       + (f" + {len(testers)}件" if testers else "") + "）")
         return
 
     click.secho(f"作成しました: {result['package_id']}", fg="green")
+    if beta:
+        click.secho(f"  {result['beta_version']} を Beta にしました", fg="green")
+        for t in result.get("testers", []):
+            color = "green" if t["sent"] else "yellow"
+            click.secho(f"  テスター {t['email']}: {t['status']}", fg=color)
     click.echo(actions.app_url(result["package_id"]))
 
 

@@ -89,6 +89,18 @@ npx @evenrealities/evenhub-cli pack app.json ./dist -o myapp.ehpk
 ehup app create --ehpk myapp.ehpk --tagline "A short description"
 ```
 
+**既定では、作成に続けて次まで行う。**
+
+1. アップロードしたビルドを Beta にする
+2. ログイン中のメールアドレスをベータテスターに追加し、招待を送る
+
+`--tester` で追加のアドレスを指定できる（複数可）。`--no-beta` で 1・2 を止め、プロジェクト作成だけにできる。
+
+```sh
+ehup app create --ehpk myapp.ehpk --tagline "..." --tester a@example.com
+ehup app create --ehpk myapp.ehpk --tagline "..." --no-beta
+```
+
 `--name` 省略時は `.ehpk` 内の名前を使う。`--icon` で 24x24 モノクロ PNG を指定できる。
 
 ### 4. ビルドをアップロードする
