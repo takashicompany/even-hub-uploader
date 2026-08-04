@@ -1,0 +1,21 @@
+[project]
+name = "even-hub-uploader"
+version = "0.1.0"
+description = "Even Hub 開発者ポータルへのプラグイン公開作業を CLI から行うツール"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.1",
+    "keyring>=25.0",
+    "cryptography>=42.0",
+    "playwright>=1.50",
+]
+
+[project.scripts]
+ehup = "ehup.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ehup"]

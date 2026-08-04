@@ -1,0 +1,21 @@
+# 資格情報（絶対にコミットしない）
+.env
+.env.local
+
+# ポータル画面のダンプ（個人情報が混入しうるため）
+captures/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+/dist/
+/build/
+
+# ブラウザのプロファイル
+.browser-profile/
+
+# OS
+.DS_Store
