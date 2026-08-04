@@ -42,16 +42,47 @@ macOS / Windows / Linux。Linux はヘッドレスでも動作する。
 ## インストール
 
 ```sh
+git clone git@github.com:takashicompany/even-hub-uploader.git
+cd even-hub-uploader
+
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/playwright install chromium
 ```
 
-ヘッドレス Linux では初回にブラウザの依存ライブラリが要る。
+SSH 鍵を使わない場合は HTTPS でも取得できる。
+
+```sh
+gh repo clone takashicompany/even-hub-uploader
+# または
+git clone https://github.com/takashicompany/even-hub-uploader.git
+```
+
+プライベートリポジトリなので、取得にはアクセス権のある GitHub アカウントの認証が要る。
+
+### PATH から使えるようにする
+
+```sh
+ln -sf "$(pwd)/.venv/bin/ehup" ~/.local/bin/ehup
+```
+
+`~/.local/bin` が PATH に入っていれば、以後どこからでも `ehup` で実行できる。
+
+### ヘッドレス Linux の場合
+
+ブラウザが起動しないときは、依存ライブラリを入れる。
 
 ```sh
 .venv/bin/playwright install --with-deps chromium   # root 権限が必要
 ```
+
+### 更新する
+
+```sh
+git pull
+```
+
+依存関係が変わったときのみ `.venv/bin/pip install -e .` を再実行する。
 
 ## 使い方
 
