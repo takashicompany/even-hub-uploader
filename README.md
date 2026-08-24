@@ -14,6 +14,7 @@ Even Hub 開発者ポータル（https://hub.evenrealities.com ）の画面を�
 | `ehup logout` | 保存済み資格情報を削除する |
 | `ehup apps` | プロジェクト一覧 |
 | `ehup app create` | `.ehpk` から新規プロジェクトを作成 |
+| `ehup app icon` | 既存プロジェクトのアイコンを変更する |
 | `ehup versions` | ビルド一覧 |
 | `ehup upload` | `.ehpk` をアップロード（アップデートノート付き） |
 | `ehup beta push` | ビルドをベータ状態にする |
@@ -28,7 +29,8 @@ Even Hub 開発者ポータル（https://hub.evenrealities.com ）の画面を�
 - プロジェクトの削除
 - ビルドの削除
 - テスターの削除
-- 公開審査の取り下げ
+- 公開審査への提出（Submit for review）と取り下げ
+- ストアリスティング下書きの破棄（Revert）
 
 これらが必要な場合はポータルで手動操作すること。
 
@@ -134,7 +136,30 @@ ehup app create --ehpk myapp.ehpk --tagline "..." --no-beta
 
 `--name` 省略時は `.ehpk` 内の名前を使う。`--icon` で 24x24 モノクロ PNG を指定できる。
 
-### 4. ビルドをアップロードする
+### 4. アイコンを変更する
+
+```sh
+ehup app icon --app com.example.myapp --icon icon.png
+ehup app icon --app com.example.myapp --icon icon.png --dry-run
+```
+
+ポータルの Store listing → Basic info を操作する。アイコンは 24x24 のモノクロ PNG。
+指定した PNG の寸法が違う場合は、ポータルに触れる前に止まる。
+
+**審査を通ったビルドがあるプロジェクトでは、既定で確定せずに止まる。**
+ポータルはそうしたプロジェクトの Store listing の変更を「下書き」に溜め、
+Submit for review（再審査）を通すまで公開中の内容を書き換えないため、
+アイコンだけを差し替えることができない。
+
+下書きとして保存するところまでで良ければ `--allow-draft` を付ける。
+
+```sh
+ehup app icon --app com.example.myapp --icon icon.png --allow-draft
+```
+
+この場合も審査には出さない。下書きの提出・破棄はポータルで行うこと。
+
+### 5. ビルドをアップロードする
 
 ```sh
 ehup upload --app com.example.myapp --ehpk myapp.ehpk --notes "修正内容"
@@ -143,13 +168,13 @@ ehup upload --app com.example.myapp --ehpk myapp.ehpk --notes @CHANGELOG.txt
 
 アップデートノートは 500 文字以内。`@ファイル名` でファイルから読める。
 
-### 5. ベータに上げる
+### 6. ベータに上げる
 
 ```sh
 ehup beta push --app com.example.myapp --version 1.2.0
 ```
 
-### 6. テスターを追加する
+### 7. テスターを追加する
 
 ```sh
 ehup beta add-testers --app com.example.myapp --email a@example.com --email b@example.com

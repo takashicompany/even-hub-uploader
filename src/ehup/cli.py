@@ -256,6 +256,68 @@ def app_create(
     click.echo(actions.app_url(result["package_id"]))
 
 
+@app_group.command("icon")
+@click.option("--app", "package_id", required=True, help="パッケージID")
+@click.option(
+    "--icon",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="アイコン（24x24 モノクロ PNG）",
+)
+@click.option(
+    "--allow-draft",
+    is_flag=True,
+    help="公開中の内容が変わらず下書きに留まる場合でも保存する",
+)
+@click.option("--dry-run", is_flag=True, help="確定せずに、入力内容だけ確認する")
+@browser_options
+def app_icon(
+    package_id: str,
+    icon: Path,
+    allow_draft: bool,
+    dry_run: bool,
+    headed: bool,
+    as_json: bool,
+) -> None:
+    """既存プロジェクトのアイコンを変更する（Store listing の Basic info）。
+
+    審査を通ったビルドがあるプロジェクトでは、ポータルは Store listing の変更を
+    下書きに溜め、Submit for review を通すまで公開中の内容を書き換えない。
+    その場合は既定で確定せずに止まる（--allow-draft で下書き保存まで行う）。
+    """
+    from . import actions
+    from .browser import PortalError
+
+    with _portal(headed) as p:
+        try:
+            result = actions.set_icon(
+                p, package_id, icon=icon, dry_run=dry_run, allow_draft=allow_draft
+            )
+        except PortalError as exc:
+            _fail(str(exc))
+
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if dry_run:
+        click.secho("確定していません（--dry-run）", fg="yellow")
+        click.echo(f"  プロジェクト : {result['package_id']}（{result['name']}）")
+        click.echo(f"  アイコン     : {result['icon']}")
+        click.echo(f"  現在のアイコン: {result['current_icon'] or '(なし)'}")
+        if result["draft_mode"]:
+            click.secho("\n" + actions.DRAFT_NOTICE, fg="yellow")
+        return
+
+    if result.get("saved_as_draft"):
+        click.secho("下書きとして保存しました（公開中のアイコンは未変更）", fg="yellow")
+        click.echo("  変更のある項目: " + ", ".join(result["changed_sections"]))
+        click.secho("反映にはポータルでの Submit for review が必要です。", fg="yellow")
+    else:
+        click.secho(f"アイコンを変更しました: {result['package_id']}", fg="green")
+    click.echo(actions.app_url(result["package_id"]) + "/store-listing")
+
+
 # --------------------------------------------------------------------------
 # ビルド
 # --------------------------------------------------------------------------

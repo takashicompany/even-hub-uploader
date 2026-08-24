@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from pathlib import Path
 
@@ -178,6 +179,153 @@ def _visible_dialog_text(page) -> str:
 
 def app_url(package_id: str) -> str:
     return f"{PORTAL_BASE}/hub/{package_id}"
+
+
+# --------------------------------------------------------------------------
+# ストアリスティング（アイコン）
+# --------------------------------------------------------------------------
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """PNG の幅・高さを IHDR から読む。PNG でなければ PortalError。"""
+    head = path.read_bytes()[:24]
+    if len(head) < 24 or head[:8] != _PNG_MAGIC or head[12:16] != b"IHDR":
+        raise PortalError(f"PNG ではありません: {path}")
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def listing_state(p: Portal, package_id: str) -> dict:
+    """Store listing 画面を開き、下書きの扱いに関わる状態を読む。
+
+    審査を通ったビルドがあるプロジェクトでは、ポータルは Store listing の変更を
+    「下書き」に溜め、Submit for review を通すまで公開中の内容を書き換えない。
+    その判定に使う。
+    """
+    captured: dict = {}
+
+    def on_response(r) -> None:
+        if "/api/v1/apps/store-listing-summary" in r.url:
+            key = "summary"
+        elif "/api/v1/apps/listing-draft" in r.url:
+            key = "draft"
+        elif "/api/v1/apps/get" in r.url:
+            key = "app"
+        else:
+            return
+        with contextlib.suppress(Exception):
+            captured[key] = r.json()
+
+    page = p.page
+    page.on("response", on_response)
+    try:
+        p.goto(f"/hub/{package_id}/store-listing")
+        page.wait_for_timeout(4000)
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", on_response)
+
+    summary = (captured.get("summary") or {}).get("data") or {}
+    draft = (captured.get("draft") or {}).get("data") or {}
+    app = (captured.get("app") or {}).get("data") or {}
+
+    return {
+        "draft_mode": bool(summary.get("has_approved_or_published_version")),
+        "has_draft": draft.get("draft") is not None,
+        "changed_sections": draft.get("changed_sections") or [],
+        "icon": app.get("icon") or "",
+        "name": app.get("name") or "",
+        "tagline": app.get("tagline") or "",
+    }
+
+
+DRAFT_NOTICE = (
+    "審査を通ったビルドがあるプロジェクトのため、Store listing の変更は下書きとして\n"
+    "保存されるだけで、公開中のアイコンは変わりません。\n"
+    "反映にはポータルでの Submit for review（再審査）が必要です。\n"
+    "ehup は審査への提出を行いません。下書きとして保存するだけでよければ\n"
+    "--allow-draft を付けてください（下書きはポータルの Store listing から破棄できます）。"
+)
+
+
+def _open_basic_info(page) -> None:
+    """Store listing の Basic info の Edit を開く。"""
+    heading = page.get_by_text("Basic info", exact=True).first
+    row = heading.locator("xpath=ancestor::*[.//*[normalize-space(text())='Edit']][1]")
+    row.get_by_text("Edit", exact=True).first.click()
+    page.wait_for_timeout(2000)
+    page.locator('[role="dialog"] input[name="name"]').first.wait_for(
+        state="visible", timeout=15_000
+    )
+
+
+def set_icon(
+    p: Portal,
+    package_id: str,
+    icon: Path,
+    dry_run: bool = False,
+    allow_draft: bool = False,
+) -> dict:
+    """Store listing の Basic info からアイコンを差し替える。
+
+    dry_run のときは確定ボタンを押す直前で止める。
+    下書きにしかならないプロジェクトでは、allow_draft を付けない限り確定しない。
+    """
+    if not icon.exists():
+        raise PortalError(f"アイコンが見つかりません: {icon}")
+
+    width, height = _png_size(icon)
+    if (width, height) != (24, 24):
+        raise PortalError(f"アイコンは 24x24 の PNG です（指定されたものは {width}x{height}）。")
+
+    state = listing_state(p, package_id)
+    page = p.page
+
+    result = {
+        "package_id": package_id,
+        "icon": str(icon),
+        "name": state["name"],
+        "tagline": state["tagline"],
+        "current_icon": state["icon"],
+        "draft_mode": state["draft_mode"],
+        "changed_sections": state["changed_sections"],
+        "changed": False,
+    }
+
+    _open_basic_info(page)
+    page.locator('[role="dialog"] input[type="file"][accept="image/png"]').first.set_input_files(
+        str(icon)
+    )
+    page.wait_for_timeout(1500)
+
+    if dry_run:
+        result["dry_run"] = True
+        page.get_by_role("button", name="Cancel").first.click()
+        return result
+
+    if state["draft_mode"] and not allow_draft:
+        page.get_by_role("button", name="Cancel").first.click()
+        raise PortalError(DRAFT_NOTICE)
+
+    page.get_by_role("button", name="Confirm").first.click()
+    page.wait_for_timeout(4000)
+
+    after = listing_state(p, package_id)
+    result["changed_sections"] = after["changed_sections"]
+    result["saved_as_draft"] = after["draft_mode"]
+    if after["draft_mode"]:
+        result["changed"] = "basic_info" in after["changed_sections"]
+    else:
+        result["new_icon"] = after["icon"]
+        result["changed"] = bool(after["icon"]) and after["icon"] != state["icon"]
+
+    if not result["changed"]:
+        raise PortalError(
+            "アイコンを変更できませんでした。画面に残っているメッセージを確認してください:\n"
+            + _visible_dialog_text(page)
+        )
+    return result
 
 
 # --------------------------------------------------------------------------
