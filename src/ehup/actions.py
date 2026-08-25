@@ -269,9 +269,17 @@ def _open_basic_info(page):
 #
 #   * 24x24 の PNG
 #   * 点灯画素は #F4F4F4 で不透明、消灯画素は完全に透明
-#   * 2x2 の升目（実質 12x12）に揃っていること
+#   * 2x2 のペンで、行優先に塗っていける形であること
 #
-# ポータル内蔵のアイコン作成ツール（Create with a tool）の出力と同じ形式。
+# 3つ目はポータルの検査を実測して割り出した条件で、次の走査と同じ:
+#
+#   左上から行優先に見ていき、まだ塗られていない点灯画素に出会ったら、
+#   その画素を左上とする 2x2 が全点灯していなければならない。
+#   全点灯ならその4画素を「塗った」ことにして先へ進む。
+#
+# 升目に整列している必要はない（1画素ずらした 2x2 も通る）が、
+# 3x3 の塊や十字は通らない。ポータル内蔵の作成ツール
+# （Create with a tool）の 2x2 ペンと同じ描き方に対応する。
 ICON_ON_RGB = (244, 244, 244)
 
 # 指定された PNG をブラウザ上で上記の形式へ揃え、ファイル入力に流し込む。
@@ -304,17 +312,38 @@ async (el, arg) => {
         lit[n] = (hasAlpha ? px[i + 3] >= 128 : lum < 128) ? 1 : 0;
     }
 
-    // ポータルは 2x2 単位（実質 12x12）で描かれたアイコンしか受け付けない。
-    // 揃っていないブロックは多数決で塗り潰す。
-    let snapped = 0;
-    for (let by = 0; by + 1 < h; by += 2) {
-        for (let bx = 0; bx + 1 < w; bx += 2) {
-            const idx = [by * w + bx, by * w + bx + 1, (by + 1) * w + bx, (by + 1) * w + bx + 1];
-            const sum = idx.reduce((acc, n) => acc + lit[n], 0);
-            const value = sum >= 2 ? 1 : 0;
-            for (const n of idx) {
-                if (lit[n] !== value) { lit[n] = value; snapped += 1; }
+    // ポータルの検査と同じ走査。通らない画素の座標を返す。
+    const firstBad = () => {
+        const covered = new Uint8Array(w * h);
+        for (let y = 0; y < h; y += 1) {
+            for (let x = 0; x < w; x += 1) {
+                const n = y * w + x;
+                if (!lit[n] || covered[n]) continue;
+                if (x + 1 >= w || y + 1 >= h) return [x, y];
+                const blk = [n, n + 1, n + w, n + w + 1];
+                if (!blk.every((i) => lit[i])) return [x, y];
+                for (const i of blk) covered[i] = 1;
             }
+        }
+        return null;
+    };
+
+    // 通らない画素は、2x2 を埋める方向（描き足す方向）で直す。
+    // 元の絵から画素を削らないので、描いた形がそのまま残る。
+    let added = 0;
+    let removed = 0;
+    for (let guard = 0; guard < w * h * 4; guard += 1) {
+        const bad = firstBad();
+        if (!bad) break;
+        const [x, y] = bad;
+        const n = y * w + x;
+        if (x + 1 >= w || y + 1 >= h) {
+            lit[n] = 0;
+            removed += 1;
+            continue;
+        }
+        for (const i of [n, n + 1, n + w, n + w + 1]) {
+            if (!lit[i]) { lit[i] = 1; added += 1; }
         }
     }
 
@@ -336,7 +365,14 @@ async (el, arg) => {
     el.files = dt.files;
     el.dispatchEvent(new Event("change", { bubbles: true }));
 
-    return { width: w, height: h, lit: on, snapped: snapped, source_has_alpha: hasAlpha };
+    return {
+        width: w,
+        height: h,
+        lit: on,
+        added: added,
+        removed: removed,
+        source_has_alpha: hasAlpha,
+    };
 }
 """
 
@@ -419,7 +455,8 @@ def set_icon(
     dialog = _open_basic_info(page)
     info = _put_icon(dialog, icon)
     result["lit_pixels"] = info["lit"]
-    result["snapped_pixels"] = info["snapped"]
+    result["added_pixels"] = info["added"]
+    result["removed_pixels"] = info["removed"]
     page.wait_for_timeout(1000)
 
     if dry_run:

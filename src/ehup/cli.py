@@ -302,10 +302,14 @@ def app_icon(
 
     def _pixels() -> None:
         click.echo(f"  点灯する画素 : {result['lit_pixels']} 個")
-        if result["snapped_pixels"]:
+        if result["added_pixels"]:
             click.secho(
-                f"  2x2 の升目に合わせて {result['snapped_pixels']} 画素を塗り直しました。",
+                f"  2x2 のペンで描ける形にするため {result['added_pixels']} 画素を描き足しました。",
                 fg="yellow",
+            )
+        if result["removed_pixels"]:
+            click.secho(
+                f"  端に収まらない {result['removed_pixels']} 画素を落としました。", fg="yellow"
             )
 
     if dry_run:
