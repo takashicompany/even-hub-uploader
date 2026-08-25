@@ -372,17 +372,23 @@ async (el, arg) => {
             removed += 1;
             continue;
         }
-        // その画素を覆える 2x2 のうち、描き足しが最も少ないものを選ぶ
-        let best = null;
-        for (const [ox, oy] of [[x, y], [x - 1, y], [x, y - 1], [x - 1, y - 1]]) {
-            if (ox < 0 || oy < 0 || ox + 1 >= w || oy + 1 >= h) continue;
-            const m = oy * w + ox;
-            const blk = [m, m + 1, m + w, m + w + 1];
-            const cost = blk.filter((i) => !lit[i]).length;
-            if (cost > 0 && (best === null || cost < best.cost)) best = { blk, cost };
+        // アップロード経路は行優先に見ていくので、その画素を左上とする
+        // 2x2 を埋めるほかない。ツール経路はどの向きの 2x2 でもよいので、
+        // 描き足しが最も少ないものを選ぶ。
+        let blk = [n, n + 1, n + w, n + w + 1];
+        if (mode === "editor") {
+            let best = null;
+            for (const [ox, oy] of [[x, y], [x - 1, y], [x, y - 1], [x - 1, y - 1]]) {
+                if (ox < 0 || oy < 0 || ox + 1 >= w || oy + 1 >= h) continue;
+                const m = oy * w + ox;
+                const cand = [m, m + 1, m + w, m + w + 1];
+                const cost = cand.filter((i) => !lit[i]).length;
+                if (cost > 0 && (best === null || cost < best.cost)) best = { cand, cost };
+            }
+            if (!best) { lit[n] = 0; removed += 1; continue; }
+            blk = best.cand;
         }
-        if (!best) { lit[n] = 0; removed += 1; continue; }
-        for (const i of best.blk) {
+        for (const i of blk) {
             if (!lit[i]) { lit[i] = 1; added += 1; }
         }
     }
