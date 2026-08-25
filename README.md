@@ -162,7 +162,12 @@ ehup app icon --app com.example.myapp --icon icon.png --dry-run
 
 升目に整列している必要はない（1画素ずらした 2x2 も通る）。
 ただし 3x3 の塊や十字は、2x2 の重ね塗りで描ける形であっても通らない。
-ポータル内蔵の作成ツール（Create with a tool）の 2x2 ペンに対応する条件。
+
+ポータル内蔵の作成ツール（Create with a tool）が持つ検査はこれより緩く、
+「各点灯画素が、全点灯 2x2 のどれかに属すること」しか見ていない
+（ツールの警告文も `Every pixel must be part of at least one 2x2 filled block`）。
+そのため 3x3 の塊はツール上では描けるが、PNG をアップロードする経路では弾かれる。
+ehup は後者を通る形に整える。
 
 **この変換は ehup が自動で行う。** 白黒で描いた PNG をそのまま渡してよい。
 
