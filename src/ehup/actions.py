@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import re
 from pathlib import Path
@@ -249,15 +250,137 @@ DRAFT_NOTICE = (
 )
 
 
-def _open_basic_info(page) -> None:
-    """Store listing の Basic info の Edit を開く。"""
+def _open_basic_info(page):
+    """Store listing の Basic info の Edit を開き、そのダイアログを返す。"""
     heading = page.get_by_text("Basic info", exact=True).first
     row = heading.locator("xpath=ancestor::*[.//*[normalize-space(text())='Edit']][1]")
     row.get_by_text("Edit", exact=True).first.click()
     page.wait_for_timeout(2000)
-    page.locator('[role="dialog"] input[name="name"]').first.wait_for(
-        state="visible", timeout=15_000
+
+    dialog = page.locator('[role="dialog"]:visible').filter(
+        has=page.locator('input[name="name"]')
+    ).first
+    dialog.locator('input[name="name"]').first.wait_for(state="visible", timeout=15_000)
+    return dialog
+
+
+# ポータルが受け付けるアイコンの条件（画面上の説明には出ておらず、
+# 外れると保存時に「invalid icon pixel: x, y」で弾かれる）:
+#
+#   * 24x24 の PNG
+#   * 点灯画素は #F4F4F4 で不透明、消灯画素は完全に透明
+#   * 2x2 の升目（実質 12x12）に揃っていること
+#
+# ポータル内蔵のアイコン作成ツール（Create with a tool）の出力と同じ形式。
+ICON_ON_RGB = (244, 244, 244)
+
+# 指定された PNG をブラウザ上で上記の形式へ揃え、ファイル入力に流し込む。
+# 透明を含む画像は不透明部分を、含まない画像は暗い部分を点灯画素とみなす。
+_NORMALIZE_ICON_JS = """
+async (el, arg) => {
+    const { b64, on: ON } = arg;
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const w = bitmap.width;
+    const h = bitmap.height;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0);
+
+    const image = ctx.getImageData(0, 0, w, h);
+    const px = image.data;
+
+    let hasAlpha = false;
+    for (let i = 3; i < px.length; i += 4) {
+        if (px[i] < 128) { hasAlpha = true; break; }
+    }
+
+    const lit = new Uint8Array(w * h);
+    for (let i = 0, n = 0; i < px.length; i += 4, n += 1) {
+        const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        lit[n] = (hasAlpha ? px[i + 3] >= 128 : lum < 128) ? 1 : 0;
+    }
+
+    // ポータルは 2x2 単位（実質 12x12）で描かれたアイコンしか受け付けない。
+    // 揃っていないブロックは多数決で塗り潰す。
+    let snapped = 0;
+    for (let by = 0; by + 1 < h; by += 2) {
+        for (let bx = 0; bx + 1 < w; bx += 2) {
+            const idx = [by * w + bx, by * w + bx + 1, (by + 1) * w + bx, (by + 1) * w + bx + 1];
+            const sum = idx.reduce((acc, n) => acc + lit[n], 0);
+            const value = sum >= 2 ? 1 : 0;
+            for (const n of idx) {
+                if (lit[n] !== value) { lit[n] = value; snapped += 1; }
+            }
+        }
+    }
+
+    let on = 0;
+    for (let i = 0, n = 0; i < px.length; i += 4, n += 1) {
+        if (lit[n]) {
+            px[i] = ON[0]; px[i + 1] = ON[1]; px[i + 2] = ON[2]; px[i + 3] = 255;
+            on += 1;
+        } else {
+            px[i] = 0; px[i + 1] = 0; px[i + 2] = 0; px[i + 3] = 0;
+        }
+    }
+    ctx.putImageData(image, 0, 0);
+
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
+    const file = new File([blob], "icon.png", { type: "image/png" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    el.files = dt.files;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+
+    return { width: w, height: h, lit: on, snapped: snapped, source_has_alpha: hasAlpha };
+}
+"""
+
+
+def _put_icon(dialog, icon: Path) -> dict:
+    """アイコンをポータルが受け付ける形式へ揃えてから、ダイアログへ渡す。"""
+    field = dialog.locator('input[type="file"][accept="image/png"]:not([multiple])').first
+    info = field.evaluate(
+        _NORMALIZE_ICON_JS,
+        {
+            "b64": base64.b64encode(icon.read_bytes()).decode("ascii"),
+            "on": list(ICON_ON_RGB),
+        },
     )
+
+    if not info["lit"]:
+        raise PortalError(
+            f"点灯する画素がありません: {icon}\n"
+            "透明を含む PNG は不透明な部分、含まない PNG は暗い部分を点灯画素として扱います。"
+        )
+    return info
+
+
+def _save_error(page, saved: dict) -> str:
+    """保存に失敗した理由を短くまとめる。"""
+    body = saved.get("body") or {}
+    message = body.get("message") or ""
+    if message:
+        detail = f"ポータルに拒否されました: {message}"
+        if body.get("code"):
+            detail += f"（code {body['code']}）"
+        if "icon pixel" in message:
+            detail += (
+                "\nアイコンの画素がポータルの想定と違います。"
+                "24x24 で、点灯させたい形だけが描かれた PNG を指定してください。"
+            )
+        return detail
+
+    for el in page.locator('[role="dialog"]').all():
+        if el.is_visible():
+            return "画面に出ているメッセージ: " + " / ".join(
+                ln.strip() for ln in el.inner_text().splitlines() if ln.strip()
+            )[:200]
+    return "ポータルからの応答を確認できませんでした。--headed で画面を見てください。"
 
 
 def set_icon(
@@ -293,38 +416,54 @@ def set_icon(
         "changed": False,
     }
 
-    _open_basic_info(page)
-    page.locator('[role="dialog"] input[type="file"][accept="image/png"]').first.set_input_files(
-        str(icon)
-    )
-    page.wait_for_timeout(1500)
+    dialog = _open_basic_info(page)
+    info = _put_icon(dialog, icon)
+    result["lit_pixels"] = info["lit"]
+    result["snapped_pixels"] = info["snapped"]
+    page.wait_for_timeout(1000)
 
     if dry_run:
         result["dry_run"] = True
-        page.get_by_role("button", name="Cancel").first.click()
+        dialog.get_by_role("button", name="Cancel").first.click()
         return result
 
     if state["draft_mode"] and not allow_draft:
-        page.get_by_role("button", name="Cancel").first.click()
+        dialog.get_by_role("button", name="Cancel").first.click()
         raise PortalError(DRAFT_NOTICE)
 
-    page.get_by_role("button", name="Confirm").first.click()
-    page.wait_for_timeout(4000)
+    # 保存の結果はポータルの応答にしか出ないことがあるので拾っておく
+    saved: dict = {}
+
+    def on_response(r) -> None:
+        if "/api/v1/apps/" not in r.url or r.request.method not in ("POST", "PUT", "PATCH"):
+            return
+        with contextlib.suppress(Exception):
+            saved["body"] = r.json()
+
+    page.on("response", on_response)
+    try:
+        dialog.get_by_role("button", name="Confirm").first.click()
+        page.wait_for_timeout(5000)
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("response", on_response)
+
+    body = saved.get("body") or {}
+    if body.get("code"):
+        raise PortalError("アイコンを変更できませんでした。\n" + _save_error(page, saved))
 
     after = listing_state(p, package_id)
     result["changed_sections"] = after["changed_sections"]
     result["saved_as_draft"] = after["draft_mode"]
     if after["draft_mode"]:
-        result["changed"] = "basic_info" in after["changed_sections"]
+        sections = {s.replace("-", "_") for s in after["changed_sections"]}
+        result["changed"] = "basic_info" in sections
     else:
         result["new_icon"] = after["icon"]
         result["changed"] = bool(after["icon"]) and after["icon"] != state["icon"]
 
     if not result["changed"]:
-        raise PortalError(
-            "アイコンを変更できませんでした。画面に残っているメッセージを確認してください:\n"
-            + _visible_dialog_text(page)
-        )
+        raise PortalError("アイコンを変更できませんでした。\n" + _save_error(page, saved))
     return result
 
 

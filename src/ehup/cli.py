@@ -300,15 +300,25 @@ def app_icon(
         click.echo(_json.dumps(result, indent=2, ensure_ascii=False))
         return
 
+    def _pixels() -> None:
+        click.echo(f"  点灯する画素 : {result['lit_pixels']} 個")
+        if result["snapped_pixels"]:
+            click.secho(
+                f"  2x2 の升目に合わせて {result['snapped_pixels']} 画素を塗り直しました。",
+                fg="yellow",
+            )
+
     if dry_run:
         click.secho("確定していません（--dry-run）", fg="yellow")
         click.echo(f"  プロジェクト : {result['package_id']}（{result['name']}）")
         click.echo(f"  アイコン     : {result['icon']}")
         click.echo(f"  現在のアイコン: {result['current_icon'] or '(なし)'}")
+        _pixels()
         if result["draft_mode"]:
             click.secho("\n" + actions.DRAFT_NOTICE, fg="yellow")
         return
 
+    _pixels()
     if result.get("saved_as_draft"):
         click.secho("下書きとして保存しました（公開中のアイコンは未変更）", fg="yellow")
         click.echo("  変更のある項目: " + ", ".join(result["changed_sections"]))
