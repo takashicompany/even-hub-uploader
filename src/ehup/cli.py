@@ -269,12 +269,18 @@ def app_create(
     is_flag=True,
     help="公開中の内容が変わらず下書きに留まる場合でも保存する",
 )
+@click.option(
+    "--via-editor",
+    is_flag=True,
+    help="PNG を送らず、内蔵の作成ツールを 2x2 ペンで操作して描く（描いた形をそのまま通せる）",
+)
 @click.option("--dry-run", is_flag=True, help="確定せずに、入力内容だけ確認する")
 @browser_options
 def app_icon(
     package_id: str,
     icon: Path,
     allow_draft: bool,
+    via_editor: bool,
     dry_run: bool,
     headed: bool,
     as_json: bool,
@@ -284,6 +290,10 @@ def app_icon(
     審査を通ったビルドがあるプロジェクトでは、ポータルは Store listing の変更を
     下書きに溜め、Submit for review を通すまで公開中の内容を書き換えない。
     その場合は既定で確定せずに止まる（--allow-draft で下書き保存まで行う）。
+
+    PNG をそのまま送る経路はポータル側の検査が厳しく、絵によっては
+    描き足しが要る。--via-editor はポータル内蔵の作成ツールを操作するため、
+    検査が緩く、多くの場合は描いた形を1画素も変えずに通せる。
     """
     from . import actions
     from .browser import PortalError
@@ -291,7 +301,12 @@ def app_icon(
     with _portal(headed) as p:
         try:
             result = actions.set_icon(
-                p, package_id, icon=icon, dry_run=dry_run, allow_draft=allow_draft
+                p,
+                package_id,
+                icon=icon,
+                dry_run=dry_run,
+                allow_draft=allow_draft,
+                via_editor=via_editor,
             )
         except PortalError as exc:
             _fail(str(exc))
@@ -302,6 +317,10 @@ def app_icon(
 
     def _pixels() -> None:
         click.echo(f"  点灯する画素 : {result['lit_pixels']} 個")
+        if result.get("stamps") is not None:
+            click.echo(f"  ペンを置く回数: {result['stamps']} 回（作成ツールを操作）")
+        if not result["added_pixels"] and not result["removed_pixels"]:
+            click.secho("  描いた形をそのまま使えます（変更なし）", fg="green")
         if result["added_pixels"]:
             click.secho(
                 f"  2x2 のペンで描ける形にするため {result['added_pixels']} 画素を描き足しました。",

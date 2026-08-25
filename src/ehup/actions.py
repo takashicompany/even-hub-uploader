@@ -286,12 +286,13 @@ def _open_basic_info(page):
 # 2x2 filled block"）。3x3 の塊はツールの検査は通るが、PNG を
 # アップロードする経路では上の走査で弾かれる。ehup は後者を通す。
 ICON_ON_RGB = (244, 244, 244)
+ICON_SIZE = 24
 
 # 指定された PNG をブラウザ上で上記の形式へ揃え、ファイル入力に流し込む。
 # 透明を含む画像は不透明部分を、含まない画像は暗い部分を点灯画素とみなす。
 _NORMALIZE_ICON_JS = """
 async (el, arg) => {
-    const { b64, on: ON } = arg;
+    const { b64, on: ON, mode } = arg;
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
     const w = bitmap.width;
@@ -317,21 +318,45 @@ async (el, arg) => {
         lit[n] = (hasAlpha ? px[i + 3] >= 128 : lum < 128) ? 1 : 0;
     }
 
-    // ポータルの検査と同じ走査。通らない画素の座標を返す。
-    const firstBad = () => {
+    const full = (x, y) => {
+        if (x < 0 || y < 0 || x + 1 >= w || y + 1 >= h) return false;
+        const n = y * w + x;
+        return lit[n] && lit[n + 1] && lit[n + w] && lit[n + w + 1];
+    };
+
+    // アップロード経路の検査（行優先に 2x2 を置いていけるか）
+    const firstBadUpload = () => {
         const covered = new Uint8Array(w * h);
         for (let y = 0; y < h; y += 1) {
             for (let x = 0; x < w; x += 1) {
                 const n = y * w + x;
                 if (!lit[n] || covered[n]) continue;
-                if (x + 1 >= w || y + 1 >= h) return [x, y];
-                const blk = [n, n + 1, n + w, n + w + 1];
-                if (!blk.every((i) => lit[i])) return [x, y];
-                for (const i of blk) covered[i] = 1;
+                if (!full(x, y)) return [x, y];
+                for (const i of [n, n + 1, n + w, n + w + 1]) covered[i] = 1;
             }
         }
         return null;
     };
+
+    // 作成ツールの検査（各点灯画素が全点灯 2x2 のどれかに属するか）
+    const firstBadEditor = () => {
+        const covered = new Uint8Array(w * h);
+        for (let y = 0; y + 1 < h; y += 1) {
+            for (let x = 0; x + 1 < w; x += 1) {
+                if (!full(x, y)) continue;
+                const n = y * w + x;
+                for (const i of [n, n + 1, n + w, n + w + 1]) covered[i] = 1;
+            }
+        }
+        for (let y = 0; y < h; y += 1) {
+            for (let x = 0; x < w; x += 1) {
+                if (lit[y * w + x] && !covered[y * w + x]) return [x, y];
+            }
+        }
+        return null;
+    };
+
+    const firstBad = mode === "editor" ? firstBadEditor : firstBadUpload;
 
     // 通らない画素は、2x2 を埋める方向（描き足す方向）で直す。
     // 元の絵から画素を削らないので、描いた形がそのまま残る。
@@ -347,9 +372,34 @@ async (el, arg) => {
             removed += 1;
             continue;
         }
-        for (const i of [n, n + 1, n + w, n + w + 1]) {
+        // その画素を覆える 2x2 のうち、描き足しが最も少ないものを選ぶ
+        let best = null;
+        for (const [ox, oy] of [[x, y], [x - 1, y], [x, y - 1], [x - 1, y - 1]]) {
+            if (ox < 0 || oy < 0 || ox + 1 >= w || oy + 1 >= h) continue;
+            const m = oy * w + ox;
+            const blk = [m, m + 1, m + w, m + w + 1];
+            const cost = blk.filter((i) => !lit[i]).length;
+            if (cost > 0 && (best === null || cost < best.cost)) best = { blk, cost };
+        }
+        if (!best) { lit[n] = 0; removed += 1; continue; }
+        for (const i of best.blk) {
             if (!lit[i]) { lit[i] = 1; added += 1; }
         }
+    }
+
+    // 作成ツール経路では、置くべき 2x2 スタンプの位置を返す。
+    // 検査を通った形は「全点灯 2x2 の和集合」と一致するので、
+    // その位置すべてに 2x2 ペンを置けば元の形がそのまま再現できる。
+    if (mode === "editor") {
+        const stamps = [];
+        let on = 0;
+        for (let y = 0; y + 1 < h; y += 1) {
+            for (let x = 0; x + 1 < w; x += 1) {
+                if (full(x, y)) stamps.push([x, y]);
+            }
+        }
+        for (let n = 0; n < lit.length; n += 1) if (lit[n]) on += 1;
+        return { width: w, height: h, lit: on, added, removed, stamps };
     }
 
     let on = 0;
@@ -382,14 +432,19 @@ async (el, arg) => {
 """
 
 
-def _put_icon(dialog, icon: Path) -> dict:
-    """アイコンをポータルが受け付ける形式へ揃えてから、ダイアログへ渡す。"""
+def _plan_icon(dialog, icon: Path, mode: str) -> dict:
+    """アイコンを読み、指定の経路が通る形に整える。
+
+    mode="upload" のときは、そのままファイル入力へ流し込む。
+    mode="editor" のときは、作成ツールで置くスタンプの位置を返す。
+    """
     field = dialog.locator('input[type="file"][accept="image/png"]:not([multiple])').first
     info = field.evaluate(
         _NORMALIZE_ICON_JS,
         {
             "b64": base64.b64encode(icon.read_bytes()).decode("ascii"),
             "on": list(ICON_ON_RGB),
+            "mode": mode,
         },
     )
 
@@ -399,6 +454,51 @@ def _put_icon(dialog, icon: Path) -> dict:
             "透明を含む PNG は不透明な部分、含まない PNG は暗い部分を点灯画素として扱います。"
         )
     return info
+
+
+def _draw_with_tool(page, dialog, stamps: list) -> None:
+    """作成ツール（Create with a tool）を開き、2x2 ペンで描く。
+
+    ツールのペンは「カーソルのいる升目を左上とする 2x2」を置く。
+    stamps はその左上の位置。
+    """
+    dialog.get_by_role("button", name="Create with a tool").first.click()
+    page.wait_for_timeout(2500)
+
+    tool = page.locator('[role="dialog"]:visible').first
+    canvas = tool.locator("canvas").first
+    canvas.wait_for(state="visible", timeout=15_000)
+
+    # 読み込まれている絵を消してから描く
+    tool.get_by_role("button", name="Clear").first.click()
+    page.wait_for_timeout(600)
+
+    box = canvas.bounding_box()
+    if not box:
+        raise PortalError("作成ツールのキャンバスが見つかりませんでした。")
+    cell_w = box["width"] / ICON_SIZE
+    cell_h = box["height"] / ICON_SIZE
+
+    for cx, cy in stamps:
+        page.mouse.move(box["x"] + (cx + 0.5) * cell_w, box["y"] + (cy + 0.5) * cell_h)
+        page.wait_for_timeout(30)
+        page.mouse.down()
+        page.wait_for_timeout(30)
+        page.mouse.up()
+
+    # プレビューの枠がキャンバスに残らないよう、外へ出してから確定する
+    page.mouse.move(box["x"] - 40, box["y"] - 40)
+    page.wait_for_timeout(500)
+    tool.get_by_role("button", name="Confirm").first.click()
+    page.wait_for_timeout(2500)
+
+    warnings = [
+        el.inner_text().strip()
+        for el in page.locator('[role="alert"], [role="status"]').all()
+        if el.is_visible() and el.inner_text().strip()
+    ]
+    if warnings:
+        raise PortalError("作成ツールが受け付けませんでした: " + " / ".join(warnings)[:200])
 
 
 def _save_error(page, saved: dict) -> str:
@@ -430,8 +530,12 @@ def set_icon(
     icon: Path,
     dry_run: bool = False,
     allow_draft: bool = False,
+    via_editor: bool = False,
 ) -> dict:
     """Store listing の Basic info からアイコンを差し替える。
+
+    via_editor のときは PNG を直接送らず、内蔵の作成ツールを 2x2 ペンで
+    操作して描く。ツール側の検査の方が緩いため、描いた形をそのまま通せる。
 
     dry_run のときは確定ボタンを押す直前で止める。
     下書きにしかならないプロジェクトでは、allow_draft を付けない限り確定しない。
@@ -440,8 +544,11 @@ def set_icon(
         raise PortalError(f"アイコンが見つかりません: {icon}")
 
     width, height = _png_size(icon)
-    if (width, height) != (24, 24):
-        raise PortalError(f"アイコンは 24x24 の PNG です（指定されたものは {width}x{height}）。")
+    if (width, height) != (ICON_SIZE, ICON_SIZE):
+        raise PortalError(
+            f"アイコンは {ICON_SIZE}x{ICON_SIZE} の PNG です"
+            f"（指定されたものは {width}x{height}）。"
+        )
 
     state = listing_state(p, package_id)
     page = p.page
@@ -457,11 +564,15 @@ def set_icon(
         "changed": False,
     }
 
+    mode = "editor" if via_editor else "upload"
     dialog = _open_basic_info(page)
-    info = _put_icon(dialog, icon)
+    info = _plan_icon(dialog, icon, mode)
+    result["via_editor"] = via_editor
     result["lit_pixels"] = info["lit"]
     result["added_pixels"] = info["added"]
     result["removed_pixels"] = info["removed"]
+    if via_editor:
+        result["stamps"] = len(info["stamps"])
     page.wait_for_timeout(1000)
 
     if dry_run:
@@ -472,6 +583,9 @@ def set_icon(
     if state["draft_mode"] and not allow_draft:
         dialog.get_by_role("button", name="Cancel").first.click()
         raise PortalError(DRAFT_NOTICE)
+
+    if via_editor:
+        _draw_with_tool(page, dialog, info["stamps"])
 
     # 保存の結果はポータルの応答にしか出ないことがあるので拾っておく
     saved: dict = {}
